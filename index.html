@@ -1,204 +1,280 @@
 <!DOCTYPE html>
 <html>
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Live Anti-Spoof</title>
-
-<!-- ONNX Runtime -->
-<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
-
-<!-- MediaPipe Face Detection -->
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js"></script>
-
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Anti-Spoof Live</title>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
 <style>
-body{font-family:Arial;text-align:center;padding:20px}
-video{width:350px;height:350px;object-fit:cover;transform:scaleX(-1);border-radius:12px}
-button{padding:10px 25px;margin-top:15px;font-weight:bold;border-radius:8px;border:none;background:#2563eb;color:white;cursor:pointer}
-button:disabled{background:#94a3b8}
-#result{margin-top:15px;font-size:20px;font-weight:bold}
-.real{color:#16a34a}
-.attack{color:#dc2626}
-.idle{color:#64748b}
-.processing{color:#2563eb}
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+  body {
+    text-align: center;
+    font-family: Arial;
+    overflow-x: hidden;
+    padding: 20px 0;
+  }
+  h2 {
+    font-size: 30px;
+    margin: 16px 0 6px;
+  }
+  .instructions {
+    font-size: 15px;
+    color: #444;
+    max-width: 360px;
+    margin: 8px auto 16px;
+    line-height: 1.4;
+    padding: 0 12px;
+  }
+  .video-wrapper {
+    position: relative;
+    width: min(400px, calc(100vw - 24px));
+    height: min(400px, calc(100vw - 24px));
+    margin: 0 auto 16px;
+    overflow: hidden;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  }
+  video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1);
+    display: block;
+  }
+  .video-wrapper::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(
+        ellipse 35% 55% at center,
+        transparent 0%,
+        transparent 90%,
+        rgba(0, 0, 0, 0.80) 91%
+      );
+  }
+  #startBtn {
+    padding: 12px 32px;
+    font-size: 16px;
+    font-weight: bold;
+    background: #2563eb;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    margin: 16px 0;
+  }
+  #startBtn:hover {
+    background: #1d4ed8;
+  }
+  #startBtn:disabled {
+    background: #94a3b8;
+    cursor: not-allowed;
+  }
+  #result {
+    margin-top: 12px;
+    font-size: 22px;
+    font-weight: bold;
+    padding: 12px 24px;
+    border-radius: 8px;
+    display: inline-block;
+    min-width: 200px;
+  }
+  .real {
+    color: #16a34a;
+    background: #dcfce7;
+  }
+  .attack {
+    color: #dc2626;
+    background: #fee2e2;
+  }
+  .processing {
+    color: #2563eb;
+    background: #dbeafe;
+  }
+  .idle {
+    color: #64748b;
+    background: #f1f5f9;
+  }
+  #countdown {
+    font-size: 14px;
+    color: #666;
+    margin-top: 8px;
+  }
 </style>
 </head>
-
 <body>
-
-<h2>Live Anti-Spoof Verification</h2>
-<video id="video" autoplay playsinline muted></video>
-<br>
-<button id="startBtn" disabled>Loading...</button>
-<p id="result" class="idle">Waiting for face...</p>
-
+<h2>Live Anti-Spoof Detection</h2>
+<p class="instructions">
+  Position your face clearly within the oval guide.<br>
+  Click the button below to start verification.
+</p>
+<div class="video-wrapper">
+  <video id="video" autoplay playsinline muted></video>
+</div>
 <canvas id="canvas" width="224" height="224" style="display:none;"></canvas>
+
+<button id="startBtn" disabled>Loading Model...</button>
+<p id="result" class="idle">Ready to verify</p>
+<p id="countdown"></p>
 
 <script>
 let session;
-let faceDetector;
-let faceBox = null;
-let facePresent = false;
-
 let isRunning = false;
-let logits = [];
-
-const video = document.getElementById("video");
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d", { willReadFrequently: true });
-const btn = document.getElementById("startBtn");
-const resultEl = document.getElementById("result");
+let collectedLogits = [];
+let inferenceTimer = null;
 
 async function init() {
-
-  // Load ONNX model
-  session = await ort.InferenceSession.create("3.onnx");
-
-  // Start camera
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "user" }
-  });
-  video.srcObject = stream;
-
-  video.onloadeddata = () => {
-    initFaceDetector();
-    btn.disabled = false;
-    btn.innerText = "Start Verification";
-  };
-}
-
-function initFaceDetector() {
-
-  faceDetector = new FaceDetection({
-    locateFile: file =>
-      `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
-  });
-
-  faceDetector.setOptions({
-    model: "short",
-    minDetectionConfidence: 0.6
-  });
-
-  faceDetector.onResults(results => {
-    if (results.detections.length > 0) {
-      facePresent = true;
-      faceBox = results.detections[0].boundingBox;
-      if (!isRunning) {
-        resultEl.className = "idle";
-        resultEl.innerText = "Face detected";
-      }
-    } else {
-      facePresent = false;
-      faceBox = null;
-      resultEl.className = "idle";
-      resultEl.innerText = "Waiting for face...";
-      if (isRunning) stopVerification();
-    }
-  });
-
-  detectLoop();
-}
-
-async function detectLoop() {
-  if (video.readyState >= 2) {
-    await faceDetector.send({ image: video });
+  try {
+    session = await ort.InferenceSession.create("3.onnx");
+    console.log("Model loaded successfully");
+    
+    const video = document.getElementById("video");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user" }
+    });
+    video.srcObject = stream;
+    
+    video.onloadeddata = () => {
+      console.log("Camera started");
+      document.getElementById("startBtn").disabled = false;
+      document.getElementById("startBtn").innerText = "Start Verification";
+    };
+    
+  } catch (error) {
+    document.getElementById("result").innerText = "Error: " + error.message;
+    console.error("Initialization error:", error);
   }
-  requestAnimationFrame(detectLoop);
 }
 
 function startVerification() {
-
-  if (!facePresent) {
-    resultEl.innerText = "No face detected";
-    return;
-  }
-
-  isRunning = true;
-  logits = [];
+  const btn = document.getElementById("startBtn");
+  const resultEl = document.getElementById("result");
+  const countdownEl = document.getElementById("countdown");
+  
+  // Disable button
   btn.disabled = true;
   btn.innerText = "Verifying...";
+  
+  // Reset state
+  isRunning = true;
+  collectedLogits = [];
   resultEl.className = "processing";
   resultEl.innerText = "Processing...";
-
-  setTimeout(stopVerification, 3000);
-  inferenceLoop();
+  
+  let timeLeft = 3;
+  countdownEl.innerText = `Time remaining: ${timeLeft}s`;
+  
+  // Countdown timer
+  const countdownInterval = setInterval(() => {
+    timeLeft--;
+    if (timeLeft > 0) {
+      countdownEl.innerText = `Time remaining: ${timeLeft}s`;
+    } else {
+      clearInterval(countdownInterval);
+      countdownEl.innerText = "";
+    }
+  }, 1000);
+  
+  // Start inference loop
+  runInferenceLoop();
+  
+  // Stop after 3 seconds and compute result
+  inferenceTimer = setTimeout(() => {
+    isRunning = false;
+    computeFinalResult();
+    btn.disabled = false;
+    btn.innerText = "Start Verification";
+  }, 3000);
 }
 
-function stopVerification() {
-  isRunning = false;
-  btn.disabled = false;
-  btn.innerText = "Start Verification";
-  computeResult();
-}
-
-async function inferenceLoop() {
-
-  if (!isRunning || !facePresent) return;
-
-  const vw = video.videoWidth;
-  const vh = video.videoHeight;
-
-  const x = (faceBox.xCenter - faceBox.width / 2) * vw;
-  const y = (faceBox.yCenter - faceBox.height / 2) * vh;
-  const w = faceBox.width * vw;
-  const h = faceBox.height * vh;
-
-  // compensate mirror
-  const correctedX = vw - x - w;
-
-  ctx.drawImage(video, correctedX, y, w, h, 0, 0, 224, 224);
-
-  const img = ctx.getImageData(0, 0, 224, 224).data;
-  const input = new Float32Array(1 * 3 * 224 * 224);
-
-  const mean = [0.485, 0.456, 0.406];
-  const std  = [0.229, 0.224, 0.225];
-
-  for (let i = 0; i < 224 * 224; i++) {
-    const r = img[i * 4] / 255;
-    const g = img[i * 4 + 1] / 255;
-    const b = img[i * 4 + 2] / 255;
-
-    input[i] = (r - mean[0]) / std[0];
-    input[i + 224*224] = (g - mean[1]) / std[1];
-    input[i + 2*224*224] = (b - mean[2]) / std[2];
+async function runInferenceLoop() {
+  if (!isRunning) return;
+  
+  try {
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    
+    ctx.save();
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, -224, 0, 224, 224);
+    ctx.restore();
+    
+    const imageData = ctx.getImageData(0, 0, 224, 224).data;
+    const floatData = new Float32Array(1 * 3 * 224 * 224);
+    
+    const mean = [0.485, 0.456, 0.406];
+    const std  = [0.229, 0.224, 0.225];
+    
+    for (let i = 0; i < 224 * 224; i++) {
+      const r = imageData[i * 4]     / 255;
+      const g = imageData[i * 4 + 1] / 255;
+      const b = imageData[i * 4 + 2] / 255;
+      
+      floatData[i]             = (r - mean[0]) / std[0];
+      floatData[i + 224*224]   = (g - mean[1]) / std[1];
+      floatData[i + 2*224*224] = (b - mean[2]) / std[2];
+    }
+    
+    const tensor = new ort.Tensor("float32", floatData, [1, 3, 224, 224]);
+    const results = await session.run({ input: tensor });
+    
+    const output = results.output.data;
+    const logit = output.length === 1 ? output[0] : output;
+    
+    // Collect logit for averaging
+    collectedLogits.push(logit);
+    
+  } catch (error) {
+    console.error("Inference error:", error);
   }
-
-  const tensor = new ort.Tensor("float32", input, [1,3,224,224]);
-  const output = await session.run({ input: tensor });
-
-  logits.push(output.output.data[0]);
-
-  setTimeout(inferenceLoop, 100);
+  
+  // Continue loop if still running
+  if (isRunning) {
+    setTimeout(runInferenceLoop, 100); // 10 FPS
+  }
 }
 
-function computeResult() {
-
-  if (logits.length === 0) {
+function computeFinalResult() {
+  const resultEl = document.getElementById("result");
+  
+  if (collectedLogits.length === 0) {
     resultEl.className = "idle";
-    resultEl.innerText = "No valid samples";
+    resultEl.innerText = "No data collected";
     return;
   }
-
-  const avg = logits.reduce((a,b)=>a+b,0)/logits.length;
-  const prob = 1/(1+Math.exp(-avg));
-
-  const real = prob > 0.5;
-  const confidence = real ? prob : 1 - prob;
-
-  if (real) {
+  
+  // Average all collected logits
+  const avgLogit = collectedLogits.reduce((a, b) => a + b, 0) / collectedLogits.length;
+  const prob = 1 / (1 + Math.exp(-avgLogit));
+  
+  console.log(`Collected ${collectedLogits.length} samples`);
+  console.log(`Average logit: ${avgLogit.toFixed(3)}`);
+  console.log(`Final probability: ${prob.toFixed(3)}`);
+  
+  const isReal = prob > 0.5;
+  const confidence = isReal ? prob : (1 - prob);
+  
+  if (isReal) {
     resultEl.className = "real";
-    resultEl.innerText = `REAL (${(confidence*100).toFixed(1)}%)`;
+    resultEl.innerText = `REAL (${(confidence * 100).toFixed(1)}% confidence)`;
   } else {
     resultEl.className = "attack";
-    resultEl.innerText = `SPOOF DETECTED (${(confidence*100).toFixed(1)}%)`;
+    resultEl.innerText = `SPOOF DETECTED (${(confidence * 100).toFixed(1)}% confidence)`;
   }
 }
 
-btn.addEventListener("click", startVerification);
+// Attach button event
+document.getElementById("startBtn").addEventListener("click", startVerification);
 
+// Initialize on page load
 init();
 </script>
-
 </body>
 </html>
